@@ -1,13 +1,17 @@
 import os
-import asyncio
 import json
-from typing import List, Dict, Any
+import secrets
+import time
+import uuid
+from dataclasses import dataclass
+from pathlib import Path
+from typing import List, Dict, Any, Tuple
+
+from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from ruamel.yaml import YAML
-from pathlib import Path
-from dotenv import load_dotenv
 from google import genai
+from ruamel.yaml import YAML
 
 # Load environment variables
 load_dotenv()
@@ -18,7 +22,7 @@ if not GEMINI_API_KEY:
     raise ValueError("GEMINI_API_KEY not found in environment variables")
 
 client = genai.Client(api_key=GEMINI_API_KEY)
-MODEL_NAME = 'gemini-flash-lite-latest'
+MODEL_NAME = "gemini-flash-lite-latest"
 
 app = FastAPI()
 
@@ -35,53 +39,167 @@ yaml = YAML()
 yaml.preserve_quotes = True
 yaml.indent(mapping=2, sequence=4, offset=2)
 
-TEMPLATES_DIR = Path("templates")
+BASE_DIR = Path(__file__).resolve().parent
+TEMPLATES_DIR = BASE_DIR / "templates"
+GENERATED_TEMPLATES_DIR = BASE_DIR / "generated_templates"
+GENERATED_TEMPLATES_DIR.mkdir(parents=True, exist_ok=True)
 
-def read_template(template_name: str) -> Dict[str, Any]:
-    file_path = TEMPLATES_DIR / template_name
-    with open(file_path, "r") as f:
-        return yaml.load(f)
+# Keep filename aliases short and stable.
+TEMPLATE_ALIASES = {
+    "login": "login",
+    "register": "reg",
+}
 
-def write_template(template_name: str, config: Dict[str, Any]):
-    file_path = TEMPLATES_DIR / template_name
-    with open(file_path, "w") as f:
+
+def read_yaml(file_path: Path) -> Dict[str, Any]:
+    with open(file_path, "r", encoding="utf-8") as f:
+        return yaml.load(f) or {}
+
+
+def write_yaml(file_path: Path, config: Dict[str, Any]):
+    with open(file_path, "w", encoding="utf-8") as f:
         yaml.dump(config, f)
 
-def update_nested_dict(d: dict, path: str, value: any):
-    keys = path.split('.')
+
+def read_template(template_name: str) -> Dict[str, Any]:
+    return read_yaml(TEMPLATES_DIR / template_name)
+
+
+def template_alias(template_name: str) -> str:
+    stem = Path(template_name).stem.lower()
+    return TEMPLATE_ALIASES.get(stem, stem)
+
+
+def snapshot_file_name(session_id: str, template_name: str, version: int) -> str:
+    return f"{session_id}-{template_alias(template_name)}-v{version}.yml"
+
+
+def list_template_snapshots(session_id: str, template_name: str) -> List[Tuple[int, Path]]:
+    alias = template_alias(template_name)
+    pattern = f"{session_id}-{alias}-v*.yml"
+    prefix = f"{session_id}-{alias}-v"
+
+    snapshots: List[Tuple[int, Path]] = []
+    for file_path in GENERATED_TEMPLATES_DIR.glob(pattern):
+        if not file_path.name.endswith(".yml"):
+            continue
+
+        version_text = file_path.stem[len(prefix):]
+        if version_text.isdigit():
+            snapshots.append((int(version_text), file_path))
+
+    snapshots.sort(key=lambda item: item[0])
+    return snapshots
+
+
+def read_latest_session_config(session_id: str, template_name: str) -> Tuple[Dict[str, Any], int, Path]:
+    snapshots = list_template_snapshots(session_id, template_name)
+    if snapshots:
+        latest_version, latest_path = snapshots[-1]
+        return read_yaml(latest_path), latest_version, latest_path
+
+    # Version 0 always comes from immutable defaults in templates/.
+    default_path = TEMPLATES_DIR / template_name
+    return read_template(template_name), 0, default_path
+
+
+def write_next_snapshot(session_id: str, template_name: str, config: Dict[str, Any]) -> Tuple[int, Path]:
+    snapshots = list_template_snapshots(session_id, template_name)
+    current_version = snapshots[-1][0] if snapshots else 0
+    next_version = current_version + 1
+    next_path = GENERATED_TEMPLATES_DIR / snapshot_file_name(session_id, template_name, next_version)
+    write_yaml(next_path, config)
+    return next_version, next_path
+
+
+def generate_uuid7() -> str:
+    # UUIDv7 layout: 48-bit unix_ts_ms + version/variant bits + randomness.
+    unix_ts_ms = int(time.time() * 1000)
+    rand_a = secrets.randbits(12)
+    rand_b = secrets.randbits(62)
+
+    value = 0
+    value |= (unix_ts_ms & ((1 << 48) - 1)) << 80
+    value |= 0x7 << 76
+    value |= rand_a << 64
+    value |= 0b10 << 62
+    value |= rand_b
+
+    return str(uuid.UUID(int=value))
+
+
+def update_nested_dict(d: dict, path: str, value: Any):
+    keys = path.split(".")
     for key in keys[:-1]:
         if key not in d:
             d[key] = {}
         d = d[key]
     d[keys[-1]] = value
 
+
+@dataclass
+class SessionState:
+    browser_session_id: str
+    session_id: str
+    active_template: str = "login.yml"
+
+
 class ConnectionManager:
     def __init__(self):
         self.active_connections: List[WebSocket] = []
-        self.active_template: str = "login.yml"
+        self.connection_sessions: Dict[WebSocket, SessionState] = {}
+        self.browser_sessions: Dict[str, SessionState] = {}
 
-    async def connect(self, websocket: WebSocket):
+    async def connect(self, websocket: WebSocket, browser_session_id: str):
         await websocket.accept()
         self.active_connections.append(websocket)
-        # Send initial state sync
-        config = read_template(self.active_template)
-        await self.send_state_sync(websocket, config)
+
+        session = self.browser_sessions.get(browser_session_id)
+        if session is None:
+            session = SessionState(
+                browser_session_id=browser_session_id,
+                session_id=generate_uuid7(),
+            )
+            self.browser_sessions[browser_session_id] = session
+
+        self.connection_sessions[websocket] = session
+
+        config, version, source_file = read_latest_session_config(
+            session.session_id,
+            session.active_template,
+        )
+        await self.send_state_sync(websocket, session, config, version, source_file)
 
     def disconnect(self, websocket: WebSocket):
-        self.active_connections.remove(websocket)
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+        self.connection_sessions.pop(websocket, None)
 
-    async def broadcast(self, message: Dict[str, Any]):
-        for connection in self.active_connections:
-            await connection.send_json(message)
+    def get_session(self, websocket: WebSocket) -> SessionState:
+        return self.connection_sessions[websocket]
 
-    async def send_state_sync(self, websocket: WebSocket, config: Dict[str, Any]):
-        await websocket.send_json({
-            "type": "STATE_SYNC",
-            "activeTemplate": self.active_template,
-            "config": config
-        })
+    async def send_state_sync(
+        self,
+        websocket: WebSocket,
+        session: SessionState,
+        config: Dict[str, Any],
+        version: int,
+        source_file: Path,
+    ):
+        await websocket.send_json(
+            {
+                "type": "STATE_SYNC",
+                "activeTemplate": session.active_template,
+                "sessionId": session.session_id,
+                "version": version,
+                "sourceFile": source_file.name,
+                "config": config,
+            }
+        )
+
 
 manager = ConnectionManager()
+
 
 async def determine_intent(prompt: str, current_template: str) -> str:
     """Use Gemini to determine which template to use based on user prompt."""
@@ -118,6 +236,7 @@ Respond with ONLY the template filename (login.yml or register.yml), nothing els
     except Exception as e:
         print(f"Intent detection error: {e}")
         return current_template
+
 
 async def process_ai_prompt(prompt: str, config_dict: dict) -> tuple[List[Dict[str, Any]], str]:
     """Use Gemini to generate config mutations (path/value pairs) based on user prompt.
@@ -205,74 +324,76 @@ IMPORTANT:
         print(f"Response was: {response.text if 'response' in locals() else 'No response'}")
         return ([], f"Sorry, I encountered an error: {str(e)}")
 
+
 @app.websocket("/ws/editor")
 async def websocket_endpoint(websocket: WebSocket):
-    await manager.connect(websocket)
+    browser_session_id = websocket.query_params.get("browserSessionId") or str(uuid.uuid4())
+    await manager.connect(websocket, browser_session_id)
     try:
         while True:
             data = await websocket.receive_json()
+            session = manager.get_session(websocket)
+            message_type = data.get("type")
 
-            if data["type"] == "HUMAN_MUTATION":
+            if message_type == "HUMAN_MUTATION":
                 path = data["path"]
                 value = data["value"]
 
-                # Read current
-                config = read_template(manager.active_template)
+                # Read current session config
+                config, _, _ = read_latest_session_config(session.session_id, session.active_template)
                 # Update
                 update_nested_dict(config, path, value)
-                # Save
-                write_template(manager.active_template, config)
-                # Broadcast
-                await manager.broadcast({
-                    "type": "STATE_SYNC",
-                    "activeTemplate": manager.active_template,
-                    "config": config
-                })
+                # Save immutable snapshot
+                version, snapshot_path = write_next_snapshot(session.session_id, session.active_template, config)
+                # Sync back only to this browser session
+                await manager.send_state_sync(websocket, session, config, version, snapshot_path)
 
-            elif data["type"] == "AI_PROMPT":
+            elif message_type == "AI_PROMPT":
                 prompt = data["prompt"]
 
-                # Lock UI
-                await manager.broadcast({"type": "UI_LOCK"})
+                # Lock this browser session's UI
+                await websocket.send_json({"type": "UI_LOCK"})
+                try:
+                    # Determine if we should switch templates
+                    new_template = await determine_intent(prompt, session.active_template)
+                    template_switched = new_template != session.active_template
 
-                # Determine if we should switch templates
-                new_template = await determine_intent(prompt, manager.active_template)
-                template_switched = new_template != manager.active_template
+                    # Load current or new template config
+                    session.active_template = new_template
+                    config, _, _ = read_latest_session_config(session.session_id, session.active_template)
 
-                # Load current or new template config
-                manager.active_template = new_template
-                config = read_template(manager.active_template)
+                    # Get AI-generated mutations and response message
+                    mutations, ai_message = await process_ai_prompt(prompt, config)
 
-                # Get AI-generated mutations and response message
-                mutations, ai_message = await process_ai_prompt(prompt, config)
+                    # If template was switched, prepend that info to the message
+                    if template_switched:
+                        template_name = new_template.replace(".yml", "").capitalize()
+                        ai_message = f"Switched to {template_name} template. {ai_message}"
 
-                # If template was switched, prepend that info to the message
-                if template_switched:
-                    template_name = new_template.replace('.yml', '').capitalize()
-                    ai_message = f"Switched to {template_name} template. {ai_message}"
+                    # Apply each mutation to preserve YAML structure and comments
+                    for mutation in mutations:
+                        update_nested_dict(config, mutation["path"], mutation["value"])
 
-                # Apply each mutation to preserve YAML structure and comments
-                for mutation in mutations:
-                    update_nested_dict(config, mutation["path"], mutation["value"])
+                    # Save immutable snapshot (comments preserved)
+                    version, snapshot_path = write_next_snapshot(
+                        session.session_id,
+                        session.active_template,
+                        config,
+                    )
 
-                # Save changes (comments preserved!)
-                write_template(manager.active_template, config)
+                    # Send new state for this browser session
+                    await manager.send_state_sync(websocket, session, config, version, snapshot_path)
 
-                # Broadcast new state
-                await manager.broadcast({
-                    "type": "STATE_SYNC",
-                    "activeTemplate": manager.active_template,
-                    "config": config
-                })
-
-                # Send AI text response
-                await manager.broadcast({
-                    "type": "AI_RESPONSE",
-                    "message": ai_message
-                })
-
-                # Unlock UI
-                await manager.broadcast({"type": "UI_UNLOCK"})
+                    # Send AI text response
+                    await websocket.send_json(
+                        {
+                            "type": "AI_RESPONSE",
+                            "message": ai_message,
+                        }
+                    )
+                finally:
+                    # Unlock even if AI processing fails
+                    await websocket.send_json({"type": "UI_UNLOCK"})
 
     except WebSocketDisconnect:
         manager.disconnect(websocket)
@@ -280,6 +401,8 @@ async def websocket_endpoint(websocket: WebSocket):
         print(f"WebSocket error: {e}")
         manager.disconnect(websocket)
 
+
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="0.0.0.0", port=8000)

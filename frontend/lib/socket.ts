@@ -2,17 +2,34 @@ let socket: WebSocket | null = null;
 let reconnectAttempts = 0;
 const MAX_RECONNECT_ATTEMPTS = 5;
 const RECONNECT_DELAY = 2000;
+const BROWSER_SESSION_STORAGE_KEY = 'chromaui-browser-session-id';
 
 let messageHandler: ((data: any) => void) | null = null;
 let openHandler: (() => void) | null = null;
 let closeHandler: (() => void) | null = null;
+
+const getBrowserSessionId = () => {
+    if (typeof window === 'undefined') {
+        return 'server';
+    }
+
+    const existing = window.sessionStorage.getItem(BROWSER_SESSION_STORAGE_KEY);
+    if (existing) {
+        return existing;
+    }
+
+    const created = window.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    window.sessionStorage.setItem(BROWSER_SESSION_STORAGE_KEY, created);
+    return created;
+};
 
 const connect = () => {
     if (socket?.readyState === WebSocket.OPEN || socket?.readyState === WebSocket.CONNECTING) {
         return socket;
     }
 
-    socket = new WebSocket('ws://localhost:8000/ws/editor');
+    const browserSessionId = encodeURIComponent(getBrowserSessionId());
+    socket = new WebSocket(`ws://localhost:8000/ws/editor?browserSessionId=${browserSessionId}`);
 
     socket.onopen = () => {
         console.log('Connected to WebSocket');
