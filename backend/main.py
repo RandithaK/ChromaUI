@@ -119,11 +119,13 @@ Respond with ONLY the template filename (login.yml or register.yml), nothing els
         print(f"Intent detection error: {e}")
         return current_template
 
-async def process_ai_prompt(prompt: str, config_dict: dict) -> List[Dict[str, Any]]:
+async def process_ai_prompt(prompt: str, config_dict: dict) -> tuple[List[Dict[str, Any]], str]:
     """Use Gemini to generate config mutations (path/value pairs) based on user prompt.
 
-    Returns a list of mutations to preserve YAML comments.
-    Example: [{"path": "colors.primary.main", "value": "#ff0000"}]
+    Returns a tuple of (mutations, response_message):
+    - mutations: list of changes to apply
+    - response_message: AI's text explanation of what it did
+    Example: ([{"path": "colors.primary.main", "value": "#ff0000"}], "I've changed the primary color to red!")
     """
 
     current_config_json = json.dumps(config_dict, indent=2)
@@ -148,18 +150,24 @@ Available configuration options:
 - components.authForm.providers: array of strings (e.g., ["google", "github", "email"])
 
 Analyze the user's request and determine what needs to change.
-Respond with a JSON array of mutations (path/value pairs) that should be applied.
+Respond with a JSON object containing:
+1. "mutations": array of mutation objects (path/value pairs) that should be applied
+2. "message": a friendly text response explaining what you did (1-2 sentences)
 
 Example format:
-[
-  {{"path": "colors.primary.main", "value": "#3b82f6"}},
-  {{"path": "theme.mode", "value": "dark"}}
-]
+{{
+  "mutations": [
+    {{"path": "colors.primary.main", "value": "#3b82f6"}},
+    {{"path": "theme.mode", "value": "dark"}}
+  ],
+  "message": "I've changed the primary color to blue and switched to dark mode!"
+}}
 
 IMPORTANT:
-- Only include fields that need to change
+- Only include fields that need to change in mutations
 - Use dot notation for nested paths (e.g., "colors.primary.main")
-- Respond with ONLY the JSON array, no explanations or markdown formatting"""
+- The message should be conversational and friendly
+- Respond with ONLY the JSON object, no explanations or markdown formatting"""
 
     try:
         response = await client.aio.models.generate_content(
@@ -175,22 +183,27 @@ IMPORTANT:
             response_text = "\n".join(lines[1:-1]) if len(lines) > 2 else response_text
 
         # Parse the JSON response
-        mutations = json.loads(response_text)
+        result = json.loads(response_text)
 
-        # Validate that it's a list of mutations
-        if isinstance(mutations, list):
-            for mutation in mutations:
-                if not isinstance(mutation, dict) or "path" not in mutation or "value" not in mutation:
-                    print(f"Invalid mutation format: {mutation}")
-                    return []
-            return mutations
+        # Validate that it has mutations and message
+        if isinstance(result, dict) and "mutations" in result and "message" in result:
+            mutations = result["mutations"]
+            message = result["message"]
 
-        # If invalid, return empty list (no changes)
-        return []
+            # Validate mutations format
+            if isinstance(mutations, list):
+                for mutation in mutations:
+                    if not isinstance(mutation, dict) or "path" not in mutation or "value" not in mutation:
+                        print(f"Invalid mutation format: {mutation}")
+                        return ([], "Sorry, I encountered an error processing your request.")
+                return (mutations, message)
+
+        # If invalid, return empty list with error message
+        return ([], "Sorry, I couldn't understand how to make those changes.")
     except Exception as e:
         print(f"AI edit error: {e}")
         print(f"Response was: {response.text if 'response' in locals() else 'No response'}")
-        return []
+        return ([], f"Sorry, I encountered an error: {str(e)}")
 
 @app.websocket("/ws/editor")
 async def websocket_endpoint(websocket: WebSocket):
@@ -224,13 +237,19 @@ async def websocket_endpoint(websocket: WebSocket):
 
                 # Determine if we should switch templates
                 new_template = await determine_intent(prompt, manager.active_template)
+                template_switched = new_template != manager.active_template
 
                 # Load current or new template config
                 manager.active_template = new_template
                 config = read_template(manager.active_template)
 
-                # Get AI-generated mutations
-                mutations = await process_ai_prompt(prompt, config)
+                # Get AI-generated mutations and response message
+                mutations, ai_message = await process_ai_prompt(prompt, config)
+
+                # If template was switched, prepend that info to the message
+                if template_switched:
+                    template_name = new_template.replace('.yml', '').capitalize()
+                    ai_message = f"Switched to {template_name} template. {ai_message}"
 
                 # Apply each mutation to preserve YAML structure and comments
                 for mutation in mutations:
@@ -244,6 +263,12 @@ async def websocket_endpoint(websocket: WebSocket):
                     "type": "STATE_SYNC",
                     "activeTemplate": manager.active_template,
                     "config": config
+                })
+
+                # Send AI text response
+                await manager.broadcast({
+                    "type": "AI_RESPONSE",
+                    "message": ai_message
                 })
 
                 # Unlock UI

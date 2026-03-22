@@ -6,9 +6,10 @@ import { sendMessage } from '@/lib/socket';
 import { Paintbrush, MessageSquare, Settings, Lock } from 'lucide-react';
 
 export default function IDEPage() {
-    const { config, activeTemplate, isLocked, isConnected } = useEditorStore();
+    const { config, activeTemplate, isLocked, isConnected, messages, addMessage } = useEditorStore();
     const iframeRef = useRef<HTMLIFrameElement>(null);
     const [prompt, setPrompt] = useState('');
+    const messagesEndRef = useRef<HTMLDivElement>(null);
 
     // Step 4: Cross-window communication
     useEffect(() => {
@@ -16,6 +17,11 @@ export default function IDEPage() {
             iframeRef.current.contentWindow?.postMessage(config, "*");
         }
     }, [config]);
+
+    // Auto-scroll to latest message
+    useEffect(() => {
+        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }, [messages]);
 
     const handleMutation = (path: string, value: string | boolean) => {
         sendMessage({
@@ -28,7 +34,15 @@ export default function IDEPage() {
     const handlePromptSubmit = (e: React.FormEvent) => {
         e.preventDefault();
         if (!prompt.trim() || isLocked) return;
-        
+
+        // Add user message to chat
+        addMessage({
+            id: `user-${Date.now()}`,
+            role: 'user',
+            content: prompt,
+            timestamp: Date.now()
+        });
+
         sendMessage({
             type: "AI_PROMPT",
             prompt
@@ -104,12 +118,41 @@ export default function IDEPage() {
                     </div>
 
                     {/* Bottom Panel - Chat */}
-                    <div className="mt-6 h-48 flex flex-col">
+                    <div className="mt-6 h-64 flex flex-col">
                         <div className="flex items-center gap-2 mb-3 text-sm font-semibold text-zinc-400 uppercase tracking-wider">
                             <MessageSquare className="h-4 w-4" /> AI Assistant
                         </div>
-                        <form onSubmit={handlePromptSubmit} className="relative flex-1">
-                            <textarea 
+
+                        {/* Message History */}
+                        <div className="flex-1 overflow-y-auto rounded-xl border border-zinc-800 bg-zinc-900/50 p-4 mb-3 space-y-3">
+                            {messages.length === 0 ? (
+                                <div className="flex items-center justify-center h-full text-zinc-600 text-sm">
+                                    Start a conversation with the AI assistant...
+                                </div>
+                            ) : (
+                                messages.map((msg) => (
+                                    <div
+                                        key={msg.id}
+                                        className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+                                    >
+                                        <div
+                                            className={`max-w-[80%] rounded-lg px-4 py-2 text-sm ${
+                                                msg.role === 'user'
+                                                    ? 'bg-indigo-600 text-white'
+                                                    : 'bg-zinc-800 text-zinc-100 border border-zinc-700'
+                                            }`}
+                                        >
+                                            {msg.content}
+                                        </div>
+                                    </div>
+                                ))
+                            )}
+                            <div ref={messagesEndRef} />
+                        </div>
+
+                        {/* Input */}
+                        <form onSubmit={handlePromptSubmit} className="relative h-24">
+                            <textarea
                                 value={prompt}
                                 onChange={(e) => setPrompt(e.target.value)}
                                 disabled={isLocked}
@@ -122,7 +165,7 @@ export default function IDEPage() {
                                     }
                                 }}
                             />
-                            <button 
+                            <button
                                 type="submit"
                                 disabled={isLocked || !prompt.trim()}
                                 className="absolute bottom-4 right-4 flex h-8 w-8 items-center justify-center rounded-lg bg-indigo-600 text-white hover:bg-indigo-500 disabled:bg-zinc-800 disabled:text-zinc-600 transition-colors shadow-lg shadow-indigo-600/20"

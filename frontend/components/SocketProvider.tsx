@@ -1,11 +1,11 @@
 'use client';
 
 import { useEffect } from 'react';
-import { useEditorStore } from '@/store/useEditorStore';
+import { useEditorStore, ChatMessage } from '@/store/useEditorStore';
 import { initSocket } from '@/lib/socket';
 
 export default function SocketProvider({ children }: { children: React.ReactNode }) {
-    const { setConfig, setActiveTemplate, setLocked, setConnected } = useEditorStore();
+    const { setConfig, setActiveTemplate, setLocked, setConnected, addMessage } = useEditorStore();
 
     useEffect(() => {
         const socket = initSocket(
@@ -17,6 +17,14 @@ export default function SocketProvider({ children }: { children: React.ReactNode
                     setLocked(true);
                 } else if (data.type === 'UI_UNLOCK') {
                     setLocked(false);
+                } else if (data.type === 'AI_RESPONSE') {
+                    const message: ChatMessage = {
+                        id: `ai-${Date.now()}`,
+                        role: 'ai',
+                        content: data.message,
+                        timestamp: Date.now()
+                    };
+                    addMessage(message);
                 }
             },
             () => setConnected(true),
@@ -29,7 +37,7 @@ export default function SocketProvider({ children }: { children: React.ReactNode
                 // and we want it to persist across navigation if any.
             }
         };
-    }, [setConfig, setActiveTemplate, setLocked, setConnected]);
+    }, [setConfig, setActiveTemplate, setLocked, setConnected, addMessage]);
 
     return <>{children}</>;
 }
