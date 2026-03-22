@@ -14,7 +14,9 @@ ENV NODE_ENV=production
 COPY --from=builder /app/package*.json ./
 COPY --from=builder /app/.next ./.next
 COPY --from=builder /app/public ./public
-COPY --from=builder /app/next.config.mjs ./next.config.mjs
+# next.config.ts is used in this project; no .mjs config exists in source
+COPY --from=builder /app/next.config.ts ./next.config.ts
+# next-env.d.ts is only for TypeScript tooling and is optional at runtime.
 COPY --from=builder /app/next-env.d.ts ./next-env.d.ts
 COPY --from=builder /app/node_modules ./node_modules
 
