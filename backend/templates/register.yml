@@ -1,0 +1,22 @@
+# ChromaUI Register Template
+template_type: register
+
+# General theme configuration
+theme:
+  mode: dark
+
+# Main branding colors
+colors:
+  primary:
+    main: "#10b981"
+    light: "#34d399"
+    dark: "#059669"
+    contrastText: "#ffffff"
+
+# Components settings for the Auth form
+components:
+  authForm:
+    requireTermsAcceptance: true
+    providers:
+      - email
+      - google

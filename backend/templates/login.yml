@@ -1,0 +1,22 @@
+# ChromaUI Login Template
+template_type: login
+
+# General theme configuration
+theme:
+  mode: dark
+
+# Main branding colors
+colors:
+  primary:
+    main: "#42f05f"
+    light: "#f87171"
+    dark: "#dc2626"
+    contrastText: "#ffffff"
+
+# Components settings for the Auth form
+components:
+  authForm:
+    allowPasskey: true
+    providers:
+      - google
+      - github
