@@ -1,0 +1,43 @@
+# Root-level ignore for the full monorepo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# node / JS
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# IDEs
+.vscode/
+.idea/
+
+# Python virtual env (backend)
+.venv/
+
+# Build outputs
+dist/
+build/
+
+# Environment files
+.env*
+
+# Misc
+*.log
+**/.DS_Store
+
+# Next.js apps (frontend has its own .gitignore too)
+frontend/.next/
+frontend/out/
+frontend/.vercel
+
+# Backend temporary files
+backend/__pycache__/
+backend/*.pyc
+backend/.pytest_cache/

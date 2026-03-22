@@ -1,0 +1,23 @@
+# Backend ignores
+.venv/
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# pytest
+.pytest_cache/
+
+# local env
+.env
+
+# OS
+.DS_Store
+Thumbs.db
+
+# logs
+*.log
+
+# editor
+.vscode/
+.idea/
