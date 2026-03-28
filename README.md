@@ -24,9 +24,9 @@ The backend is a FastAPI app. It supports both local AI (Ollama) and cloud AI (G
 1. Install [Ollama](https://ollama.com/).
 2. Pull the preferred model:
    ```bash
-   ollama pull gemma3:12b
+   ollama pull gemma3:4b
    ```
-3. The backend will automatically try to use `gemma3:12b` if available. 
+3. The backend will automatically try to use `gemma3:4b` if available. And fallback to any other available ollama model accoeind to the list.
 
 _Note that you may use any other model depending on availability and system specifications in such an event you would need to alter the main.py file._
 

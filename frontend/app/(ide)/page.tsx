@@ -3,10 +3,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { useEditorStore } from '@/store/useEditorStore';
 import { sendMessage } from '@/lib/socket';
-import { Paintbrush, MessageSquare, Settings, Lock } from 'lucide-react';
+import { Paintbrush, MessageSquare, Settings, Lock, Bot } from 'lucide-react';
 
 export default function IDEPage() {
-    const { config, activeTemplate, isLocked, isConnected, messages, addMessage } = useEditorStore();
+    const { config, activeTemplate, isLocked, isConnected, messages, addMessage, aiProvider } = useEditorStore();
     const iframeRef = useRef<HTMLIFrameElement>(null);
     const [prompt, setPrompt] = useState('');
     const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -69,12 +69,26 @@ export default function IDEPage() {
                     <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-indigo-600 font-bold">C</div>
                     <h1 className="text-lg font-semibold tracking-tight">ChromaUI <span className="text-zinc-500 font-normal">/ {activeTemplate}</span></h1>
                 </div>
-                {isLocked && (
-                    <div className="flex items-center gap-2 rounded-full bg-indigo-500/10 px-3 py-1 text-sm font-medium text-indigo-400 border border-indigo-500/20">
-                        <Lock className="h-4 w-4 animate-pulse" />
-                        AI is thinking...
-                    </div>
-                )}
+                <div className="flex items-center gap-4">
+                    {aiProvider && (
+                        <div className={`flex items-center gap-2 rounded-full px-3 py-1 text-sm font-medium border ${
+                            aiProvider === 'ollama' 
+                                ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' 
+                                : aiProvider === 'gemini' 
+                                    ? 'bg-blue-500/10 text-blue-400 border-blue-500/20'
+                                    : 'bg-zinc-500/10 text-zinc-400 border-zinc-500/20'
+                        }`}>
+                            <Bot className="h-4 w-4" />
+                            {aiProvider === 'ollama' ? 'Ollama (Local)' : aiProvider === 'gemini' ? 'Gemini API' : 'Unknown AI'}
+                        </div>
+                    )}
+                    {isLocked && (
+                        <div className="flex items-center gap-2 rounded-full bg-indigo-500/10 px-3 py-1 text-sm font-medium text-indigo-400 border border-indigo-500/20">
+                            <Lock className="h-4 w-4 animate-pulse" />
+                            AI is thinking...
+                        </div>
+                    )}
+                </div>
             </header>
 
             <div className="flex flex-1 overflow-hidden">

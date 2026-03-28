@@ -203,7 +203,7 @@ manager = ConnectionManager()
 
 
 async def get_ollama_model() -> str | None:
-    target_model = "gemma3:12b"
+    target_model = "gemma3:4b"
     try:
         async_client = ollama.AsyncClient()
         response = await async_client.list()
@@ -224,7 +224,7 @@ async def get_ollama_model() -> str | None:
         print(f"Ollama list failed: {e}")
     return None
 
-async def call_llm(system_prompt: str, user_prompt: str, expect_json: bool = False) -> str:
+async def call_llm(system_prompt: str, user_prompt: str, expect_json: bool = False) -> tuple[str, str]:
     # Try Ollama first
     try:
         model = await get_ollama_model()
@@ -240,7 +240,7 @@ async def call_llm(system_prompt: str, user_prompt: str, expect_json: bool = Fal
                 messages=messages,
                 format="json" if expect_json else ""
             )
-            return response['message']['content']
+            return response['message']['content'], "ollama"
         else:
             print("No local Ollama models found. Falling back to Gemini.")
     except Exception as e:
@@ -253,7 +253,7 @@ async def call_llm(system_prompt: str, user_prompt: str, expect_json: bool = Fal
         model=MODEL_NAME,
         contents=contents,
     )
-    return response.text
+    return response.text, "gemini"
 
 async def determine_intent(prompt: str, current_template: str) -> str:
     """Use Ollama/Gemini to determine which template to use based on user prompt."""
@@ -273,7 +273,7 @@ If the request is just about styling/colors/modifications, keep the current temp
 Respond with ONLY the template filename (login.yml or register.yml), nothing else."""
 
     try:
-        response_text = await call_llm(intent_prompt, prompt, expect_json=False)
+        response_text, _ = await call_llm(intent_prompt, prompt, expect_json=False)
         template = response_text.strip()
         
         # Clean up any potential markdown or extra spaces from local LLMs
@@ -291,13 +291,14 @@ Respond with ONLY the template filename (login.yml or register.yml), nothing els
         return current_template
 
 
-async def process_ai_prompt(prompt: str, config_dict: dict) -> tuple[List[Dict[str, Any]], str]:
+async def process_ai_prompt(prompt: str, config_dict: dict) -> tuple[List[Dict[str, Any]], str, str]:
     """Use Ollama/Gemini to generate config mutations (path/value pairs) based on user prompt.
 
-    Returns a tuple of (mutations, response_message):
+    Returns a tuple of (mutations, response_message, provider):
     - mutations: list of changes to apply
     - response_message: AI's text explanation of what it did
-    Example: ([{"path": "colors.primary.main", "value": "#ff0000"}], "I've changed the primary color to red!")
+    - provider: the AI provider used
+    Example: ([{"path": "colors.primary.main", "value": "#ff0000"}], "I've changed the primary color to red!", "gemini")
     """
 
     current_config_json = json.dumps(config_dict, indent=2)
@@ -340,7 +341,7 @@ IMPORTANT:
 - Respond with ONLY the JSON object, no explanations or markdown formatting"""
 
     try:
-        response_text = await call_llm(edit_prompt, prompt, expect_json=True)
+        response_text, provider = await call_llm(edit_prompt, prompt, expect_json=True)
         response_text = response_text.strip()
 
         # Clean markdown code blocks if present
@@ -362,14 +363,14 @@ IMPORTANT:
                 for mutation in mutations:
                     if not isinstance(mutation, dict) or "path" not in mutation or "value" not in mutation:
                         print(f"Invalid mutation format: {mutation}")
-                        return ([], "Sorry, I encountered an error processing your request.")
-                return (mutations, message)
+                        return ([], "Sorry, I encountered an error processing your request.", provider)
+                return (mutations, message, provider)
 
         # If invalid, return empty list with error message
-        return ([], "Sorry, I couldn't understand how to make those changes.")
+        return ([], "Sorry, I couldn't understand how to make those changes.", provider)
     except Exception as e:
         print(f"AI edit error: {e}")
-        return ([], f"Sorry, I encountered an error: {str(e)}")
+        return ([], f"Sorry, I encountered an error: {str(e)}", "unknown")
 
 
 @app.websocket("/ws/editor")
@@ -410,7 +411,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     config, _, _ = read_latest_session_config(session.session_id, session.active_template)
 
                     # Get AI-generated mutations and response message
-                    mutations, ai_message = await process_ai_prompt(prompt, config)
+                    mutations, ai_message, provider = await process_ai_prompt(prompt, config)
 
                     # If template was switched, prepend that info to the message
                     if template_switched:
@@ -436,6 +437,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         {
                             "type": "AI_RESPONSE",
                             "message": ai_message,
+                            "provider": provider,
                         }
                     )
                 finally:
