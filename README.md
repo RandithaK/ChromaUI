@@ -4,7 +4,7 @@ Monorepo with backend and frontend apps.
 
 ## Structure
 
-- `backend/` - Python backend service.
+- `backend/` - Python backend service (FastAPI).
 - `frontend/` - Next.js frontend app.
 
 ## Getting Started
@@ -18,7 +18,21 @@ cd ChromaUI
 
 ### 2. Backend
 
-The backend is a FastAPI app. It requires a `GEMINI_API_KEY` to connect to the Gemini AI service.
+The backend is a FastAPI app. It supports both local AI (Ollama) and cloud AI (Gemini).
+
+**Ollama (Local AI - Preferred)**
+1. Install [Ollama](https://ollama.com/).
+2. Pull the preferred model:
+   ```bash
+   ollama pull gemma3:12b
+   ```
+3. The backend will automatically try to use `gemma3:12b` if available. 
+
+_Note that you may use any other model depending on availability and system specifications in such an event you would need to alter the main.py file._
+
+
+**Gemini (Cloud AI - Fallback)**
+The backend requires a `GEMINI_API_KEY` if Ollama is unavailable or fails.
 
 ```bash
 cd backend

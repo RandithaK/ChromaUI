@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from google import genai
+import ollama
 from ruamel.yaml import YAML
 
 # Load environment variables
@@ -201,8 +202,61 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
+async def get_ollama_model() -> str | None:
+    target_model = "gemma3:12b"
+    try:
+        async_client = ollama.AsyncClient()
+        response = await async_client.list()
+        
+        models = []
+        if hasattr(response, 'models') and response.models:
+            models = [m.model for m in response.models]
+        elif isinstance(response, dict) and 'models' in response and response['models']:
+            models = [m['name'] for m in response['models']]
+            
+        if target_model in models:
+            return target_model
+        elif models:
+            print(f"Ollama model '{target_model}' not found, using '{models[0]}' instead.")
+            return models[0]
+            
+    except Exception as e:
+        print(f"Ollama list failed: {e}")
+    return None
+
+async def call_llm(system_prompt: str, user_prompt: str, expect_json: bool = False) -> str:
+    # Try Ollama first
+    try:
+        model = await get_ollama_model()
+        if model:
+            print(f"Attempting to use local Ollama model: {model}")
+            async_client = ollama.AsyncClient()
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ]
+            response = await async_client.chat(
+                model=model,
+                messages=messages,
+                format="json" if expect_json else ""
+            )
+            return response['message']['content']
+        else:
+            print("No local Ollama models found. Falling back to Gemini.")
+    except Exception as e:
+        print(f"Ollama chat failed or did not respond: {e}. Falling back to Gemini.")
+
+    # Fallback to Gemini
+    print("Routing request to cloud Gemini API as fallback...")
+    contents = f"{system_prompt}\n\nUser request: \"{user_prompt}\""
+    response = await client.aio.models.generate_content(
+        model=MODEL_NAME,
+        contents=contents,
+    )
+    return response.text
+
 async def determine_intent(prompt: str, current_template: str) -> str:
-    """Use Gemini to determine which template to use based on user prompt."""
+    """Use Ollama/Gemini to determine which template to use based on user prompt."""
 
     intent_prompt = f"""You are a template router for a UI builder application.
 
@@ -212,8 +266,6 @@ Available templates:
 - login.yml: Use for login, sign-in, authentication screens
 - register.yml: Use for registration, sign-up, account creation screens
 
-User request: "{prompt}"
-
 Based on the user's request, determine which template should be active.
 Only switch templates if the user explicitly wants to work on a different screen type.
 If the request is just about styling/colors/modifications, keep the current template.
@@ -221,11 +273,12 @@ If the request is just about styling/colors/modifications, keep the current temp
 Respond with ONLY the template filename (login.yml or register.yml), nothing else."""
 
     try:
-        response = await client.aio.models.generate_content(
-            model=MODEL_NAME,
-            contents=intent_prompt,
-        )
-        template = response.text.strip()
+        response_text = await call_llm(intent_prompt, prompt, expect_json=False)
+        template = response_text.strip()
+        
+        # Clean up any potential markdown or extra spaces from local LLMs
+        if "\n" in template:
+            template = template.split("\n")[-1].strip()
 
         # Validate response
         if template in ["login.yml", "register.yml"]:
@@ -239,7 +292,7 @@ Respond with ONLY the template filename (login.yml or register.yml), nothing els
 
 
 async def process_ai_prompt(prompt: str, config_dict: dict) -> tuple[List[Dict[str, Any]], str]:
-    """Use Gemini to generate config mutations (path/value pairs) based on user prompt.
+    """Use Ollama/Gemini to generate config mutations (path/value pairs) based on user prompt.
 
     Returns a tuple of (mutations, response_message):
     - mutations: list of changes to apply
@@ -255,8 +308,6 @@ Current configuration:
 ```json
 {current_config_json}
 ```
-
-User request: "{prompt}"
 
 Available configuration options:
 - theme.mode: "dark" or "light"
@@ -289,11 +340,8 @@ IMPORTANT:
 - Respond with ONLY the JSON object, no explanations or markdown formatting"""
 
     try:
-        response = await client.aio.models.generate_content(
-            model=MODEL_NAME,
-            contents=edit_prompt,
-        )
-        response_text = response.text.strip()
+        response_text = await call_llm(edit_prompt, prompt, expect_json=True)
+        response_text = response_text.strip()
 
         # Clean markdown code blocks if present
         if response_text.startswith("```"):
@@ -321,7 +369,6 @@ IMPORTANT:
         return ([], "Sorry, I couldn't understand how to make those changes.")
     except Exception as e:
         print(f"AI edit error: {e}")
-        print(f"Response was: {response.text if 'response' in locals() else 'No response'}")
         return ([], f"Sorry, I encountered an error: {str(e)}")
 
 
