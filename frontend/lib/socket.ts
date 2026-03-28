@@ -29,7 +29,18 @@ const connect = () => {
     }
 
     const browserSessionId = encodeURIComponent(getBrowserSessionId());
-    socket = new WebSocket(`ws://localhost:8000/ws/editor?browserSessionId=${browserSessionId}`);
+    try {
+        socket = new WebSocket(`ws://localhost:8000/ws/editor?browserSessionId=${browserSessionId}`);
+    } catch (err) {
+        console.error('WebSocket instantiation failed:', err);
+        socket = null;
+        // Schedule a reconnect attempt
+        if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+            reconnectAttempts++;
+            setTimeout(connect, RECONNECT_DELAY);
+        }
+        return null;
+    }
 
     socket.onopen = () => {
         console.log('Connected to WebSocket');
@@ -51,7 +62,33 @@ const connect = () => {
     };
 
     socket.onerror = (error) => {
-        console.error('WebSocket error:', error);
+        // `onerror` can fire when the server is unreachable (readyState 3).
+        // This is expected during startup or backend outage. Keep it informative,
+        // but avoid reentrant closes in `CLOSED` state.
+        const state = socket?.readyState;
+        if (state === WebSocket.CLOSED || state === WebSocket.CLOSING) {
+            console.warn('WebSocket error while closed/closing, likely backend unavailable', {
+                error,
+                readyState: state,
+                url: (socket as any)?.url,
+            });
+            return;
+        }
+
+        console.error('WebSocket encountered an error', {
+            error,
+            readyState: state,
+            url: (socket as any)?.url,
+        });
+
+        if (state === WebSocket.OPEN) {
+            try {
+                socket?.close();
+            } catch (closeErr) {
+                console.error('Error closing WebSocket after onerror:', closeErr);
+                closeHandler?.();
+            }
+        }
     };
 
     socket.onmessage = (event) => {
